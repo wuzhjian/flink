@@ -23,6 +23,7 @@ import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.functions.AggregateFunction;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.JobManagerOptions;
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.queryablestate.KvStateID;
 import org.apache.flink.runtime.accumulators.AccumulatorSnapshot;
 import org.apache.flink.runtime.blob.BlobWriter;
@@ -495,10 +496,12 @@ public class JobMaster extends PermanentlyFencedRpcEndpoint<JobMasterId>
     @Override
     public CompletableFuture<Acknowledge> disconnectTaskManager(
             final ResourceID resourceID, final Exception cause) {
-        log.debug(
+        log.info(
                 "Disconnect TaskExecutor {} because: {}",
                 resourceID.getStringWithMetadata(),
-                cause.getMessage());
+                cause.getMessage(),
+                ExceptionUtils.returnExceptionIfUnexpected(cause.getCause()));
+        ExceptionUtils.logExceptionIfExcepted(cause.getCause(), log);
 
         taskManagerHeartbeatManager.unmonitorTarget(resourceID);
         slotPoolService.releaseTaskManager(resourceID, cause);
@@ -558,6 +561,17 @@ public class JobMaster extends PermanentlyFencedRpcEndpoint<JobMasterId>
             final OperatorEvent evt = serializedEvent.deserializeValue(userCodeLoader);
             schedulerNG.deliverOperatorEventToCoordinator(task, operatorID, evt);
             return CompletableFuture.completedFuture(Acknowledge.get());
+        } catch (Exception e) {
+            return FutureUtils.completedExceptionally(e);
+        }
+    }
+
+    @Override
+    public CompletableFuture<CoordinationResponse> sendRequestToCoordinator(
+            OperatorID operatorID, SerializedValue<CoordinationRequest> serializedRequest) {
+        try {
+            final CoordinationRequest request = serializedRequest.deserializeValue(userCodeLoader);
+            return schedulerNG.deliverCoordinationRequestToCoordinator(operatorID, request);
         } catch (Exception e) {
             return FutureUtils.completedExceptionally(e);
         }
@@ -813,9 +827,12 @@ public class JobMaster extends PermanentlyFencedRpcEndpoint<JobMasterId>
 
     @Override
     public CompletableFuture<String> triggerSavepoint(
-            @Nullable final String targetDirectory, final boolean cancelJob, final Time timeout) {
+            @Nullable final String targetDirectory,
+            final boolean cancelJob,
+            final SavepointFormatType formatType,
+            final Time timeout) {
 
-        return schedulerNG.triggerSavepoint(targetDirectory, cancelJob);
+        return schedulerNG.triggerSavepoint(targetDirectory, cancelJob, formatType);
     }
 
     @Override
@@ -825,9 +842,12 @@ public class JobMaster extends PermanentlyFencedRpcEndpoint<JobMasterId>
 
     @Override
     public CompletableFuture<String> stopWithSavepoint(
-            @Nullable final String targetDirectory, final boolean terminate, final Time timeout) {
+            @Nullable final String targetDirectory,
+            final SavepointFormatType formatType,
+            final boolean terminate,
+            final Time timeout) {
 
-        return schedulerNG.stopWithSavepoint(targetDirectory, terminate);
+        return schedulerNG.stopWithSavepoint(targetDirectory, terminate, formatType);
     }
 
     @Override
@@ -869,12 +889,7 @@ public class JobMaster extends PermanentlyFencedRpcEndpoint<JobMasterId>
             OperatorID operatorId,
             SerializedValue<CoordinationRequest> serializedRequest,
             Time timeout) {
-        try {
-            CoordinationRequest request = serializedRequest.deserializeValue(userCodeLoader);
-            return schedulerNG.deliverCoordinationRequestToCoordinator(operatorId, request);
-        } catch (Exception e) {
-            return FutureUtils.completedExceptionally(e);
-        }
+        return this.sendRequestToCoordinator(operatorId, serializedRequest);
     }
 
     @Override

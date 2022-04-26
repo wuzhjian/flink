@@ -250,11 +250,11 @@ public class ChangelogStateBackendTestUtils {
             PeriodicMaterializationManager periodicMaterializationManager) {
         StateChangelogWriter<? extends ChangelogStateHandle> writer =
                 keyedBackend.getChangelogWriter();
-        SequenceNumber sqnBefore = writer.lastAppendedSequenceNumber();
+        SequenceNumber sqn = writer.nextSequenceNumber();
         periodicMaterializationManager.triggerMaterialization();
         assertTrue(
                 "Materialization didn't truncate the changelog",
-                sqnBefore.compareTo(writer.getLowestSequenceNumber()) <= 0);
+                sqn.compareTo(writer.getLowestSequenceNumber()) <= 0);
     }
 
     public static void testMaterializedRestoreForPriorityQueue(
@@ -354,7 +354,8 @@ public class ChangelogStateBackendTestUtils {
                 (message, exception) -> asyncComplete.completeExceptionally(exception),
                 keyedBackend,
                 10,
-                1);
+                1,
+                "testTask");
     }
 
     /** Dummy {@link CheckpointStorageAccess}. */

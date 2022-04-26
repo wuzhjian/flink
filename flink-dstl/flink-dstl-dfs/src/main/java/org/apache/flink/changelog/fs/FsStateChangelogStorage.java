@@ -19,14 +19,13 @@ package org.apache.flink.changelog.fs;
 
 import org.apache.flink.annotation.Experimental;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.io.AvailabilityProvider;
 import org.apache.flink.runtime.metrics.groups.TaskManagerJobMetricGroup;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.changelog.ChangelogStateHandleStreamImpl;
-import org.apache.flink.runtime.state.changelog.StateChangelogHandleReader;
-import org.apache.flink.runtime.state.changelog.StateChangelogHandleStreamHandleReader;
 import org.apache.flink.runtime.state.changelog.StateChangelogStorage;
 
 import org.slf4j.Logger;
@@ -39,15 +38,17 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.flink.changelog.fs.FsStateChangelogOptions.PREEMPTIVE_PERSIST_THRESHOLD;
+import static org.apache.flink.changelog.fs.StateChangeUploadScheduler.directScheduler;
+import static org.apache.flink.changelog.fs.StateChangeUploadScheduler.fromConfig;
 
 /** Filesystem-based implementation of {@link StateChangelogStorage}. */
 @Experimental
 @ThreadSafe
-public class FsStateChangelogStorage
+public class FsStateChangelogStorage extends FsStateChangelogStorageForRecovery
         implements StateChangelogStorage<ChangelogStateHandleStreamImpl> {
     private static final Logger LOG = LoggerFactory.getLogger(FsStateChangelogStorage.class);
 
-    private final StateChangeUploader uploader;
+    private final StateChangeUploadScheduler uploader;
     private final long preEmptivePersistThresholdInBytes;
 
     /**
@@ -59,8 +60,7 @@ public class FsStateChangelogStorage
     public FsStateChangelogStorage(Configuration config, TaskManagerJobMetricGroup metricGroup)
             throws IOException {
         this(
-                StateChangeUploader.fromConfig(
-                        config, new ChangelogStorageMetricGroup(metricGroup)),
+                fromConfig(config, new ChangelogStorageMetricGroup(metricGroup)),
                 config.get(PREEMPTIVE_PERSIST_THRESHOLD).getBytes());
     }
 
@@ -72,29 +72,30 @@ public class FsStateChangelogStorage
             ChangelogStorageMetricGroup metricGroup)
             throws IOException {
         this(
-                new StateChangeFsUploader(
-                        basePath, basePath.getFileSystem(), compression, bufferSize, metricGroup),
+                directScheduler(
+                        new StateChangeFsUploader(
+                                basePath,
+                                basePath.getFileSystem(),
+                                compression,
+                                bufferSize,
+                                metricGroup)),
                 PREEMPTIVE_PERSIST_THRESHOLD.defaultValue().getBytes());
     }
 
     @VisibleForTesting
     public FsStateChangelogStorage(
-            StateChangeUploader uploader, long preEmptivePersistThresholdInBytes) {
+            StateChangeUploadScheduler uploader, long preEmptivePersistThresholdInBytes) {
         this.uploader = uploader;
         this.preEmptivePersistThresholdInBytes = preEmptivePersistThresholdInBytes;
     }
 
     @Override
-    public FsStateChangelogWriter createWriter(String operatorID, KeyGroupRange keyGroupRange) {
+    public FsStateChangelogWriter createWriter(
+            String operatorID, KeyGroupRange keyGroupRange, MailboxExecutor mailboxExecutor) {
         UUID logId = new UUID(0, logIdGenerator.getAndIncrement());
         LOG.info("createWriter for operator {}/{}: {}", operatorID, keyGroupRange, logId);
         return new FsStateChangelogWriter(
-                logId, keyGroupRange, uploader, preEmptivePersistThresholdInBytes);
-    }
-
-    @Override
-    public StateChangelogHandleReader<ChangelogStateHandleStreamImpl> createReader() {
-        return new StateChangelogHandleStreamHandleReader(new StateChangeFormat());
+                logId, keyGroupRange, uploader, preEmptivePersistThresholdInBytes, mailboxExecutor);
     }
 
     @Override

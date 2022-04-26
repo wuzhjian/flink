@@ -31,6 +31,7 @@ import org.apache.flink.kubernetes.kubeclient.resources.KubernetesPod;
 import org.apache.flink.kubernetes.kubeclient.resources.KubernetesPodsWatcher;
 import org.apache.flink.kubernetes.kubeclient.resources.KubernetesService;
 import org.apache.flink.kubernetes.kubeclient.resources.KubernetesWatch;
+import org.apache.flink.kubernetes.kubeclient.services.ServiceType;
 import org.apache.flink.kubernetes.utils.Constants;
 import org.apache.flink.kubernetes.utils.KubernetesUtils;
 import org.apache.flink.runtime.persistence.PossibleInconsistentStateException;
@@ -66,6 +67,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -83,6 +85,8 @@ public class Fabric8FlinkKubeClient implements FlinkKubeClient {
 
     private final NamespacedKubernetesClient internalClient;
     private final ExecutorService kubeClientExecutorService;
+    // save the master deployment atomic reference for setting owner reference of task manager pods
+    private final AtomicReference<Deployment> masterDeploymentRef;
 
     public Fabric8FlinkKubeClient(
             Configuration flinkConfig,
@@ -106,6 +110,7 @@ public class Fabric8FlinkKubeClient implements FlinkKubeClient {
                         KubernetesConfigOptions.REST_SERVICE_EXPOSED_NODE_PORT_ADDRESS_TYPE);
         this.internalClient = checkNotNull(client);
         this.kubeClientExecutorService = checkNotNull(executorService);
+        this.masterDeploymentRef = new AtomicReference<>();
     }
 
     @Override
@@ -131,25 +136,27 @@ public class Fabric8FlinkKubeClient implements FlinkKubeClient {
     public CompletableFuture<Void> createTaskManagerPod(KubernetesPod kubernetesPod) {
         return CompletableFuture.runAsync(
                 () -> {
-                    final Deployment masterDeployment =
-                            this.internalClient
-                                    .apps()
-                                    .deployments()
-                                    .withName(KubernetesUtils.getDeploymentName(clusterId))
-                                    .get();
-
-                    if (masterDeployment == null) {
-                        throw new RuntimeException(
-                                "Failed to find Deployment named "
-                                        + clusterId
-                                        + " in namespace "
-                                        + this.namespace);
+                    if (masterDeploymentRef.get() == null) {
+                        final Deployment masterDeployment =
+                                this.internalClient
+                                        .apps()
+                                        .deployments()
+                                        .withName(KubernetesUtils.getDeploymentName(clusterId))
+                                        .get();
+                        if (masterDeployment == null) {
+                            throw new RuntimeException(
+                                    "Failed to find Deployment named "
+                                            + clusterId
+                                            + " in namespace "
+                                            + this.namespace);
+                        }
+                        masterDeploymentRef.compareAndSet(null, masterDeployment);
                     }
 
                     // Note that we should use the uid of the master Deployment for the
                     // OwnerReference.
                     setOwnerReference(
-                            masterDeployment,
+                            checkNotNull(masterDeploymentRef.get()),
                             Collections.singletonList(kubernetesPod.getInternalResource()));
 
                     LOG.debug(
@@ -181,10 +188,10 @@ public class Fabric8FlinkKubeClient implements FlinkKubeClient {
         final int restPort = getRestPortFromExternalService(service);
 
         final KubernetesConfigOptions.ServiceExposedType serviceExposedType =
-                KubernetesConfigOptions.ServiceExposedType.valueOf(service.getSpec().getType());
+                ServiceType.classify(service);
 
         // Return the external service.namespace directly when using ClusterIP.
-        if (serviceExposedType == KubernetesConfigOptions.ServiceExposedType.ClusterIP) {
+        if (serviceExposedType.isClusterIP()) {
             return Optional.of(
                     new Endpoint(
                             ExternalServiceDecorator.getNamespacedExternalServiceName(
@@ -342,6 +349,8 @@ public class Fabric8FlinkKubeClient implements FlinkKubeClient {
 
     @Override
     public CompletableFuture<Void> deleteConfigMapsByLabels(Map<String, String> labels) {
+        // the only time, the delete method returns false is due to a 404 HTTP status which is
+        // returned if the underlying resource doesn't exist
         return CompletableFuture.runAsync(
                 () -> this.internalClient.configMaps().withLabels(labels).delete(),
                 kubeClientExecutorService);
@@ -349,6 +358,8 @@ public class Fabric8FlinkKubeClient implements FlinkKubeClient {
 
     @Override
     public CompletableFuture<Void> deleteConfigMap(String configMapName) {
+        // the only time, the delete method returns false is due to a 404 HTTP status which is
+        // returned if the underlying resource doesn't exist
         return CompletableFuture.runAsync(
                 () -> this.internalClient.configMaps().withName(configMapName).delete(),
                 kubeClientExecutorService);

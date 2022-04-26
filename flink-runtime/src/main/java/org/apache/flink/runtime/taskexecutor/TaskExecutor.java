@@ -31,8 +31,6 @@ import org.apache.flink.runtime.blob.TransientBlobService;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointFailureReason;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
-import org.apache.flink.runtime.checkpoint.CheckpointType;
-import org.apache.flink.runtime.checkpoint.CheckpointType.PostCheckpointAction;
 import org.apache.flink.runtime.checkpoint.JobManagerTaskRestore;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
@@ -118,6 +116,8 @@ import org.apache.flink.runtime.taskexecutor.rpc.RpcPartitionStateChecker;
 import org.apache.flink.runtime.taskexecutor.rpc.RpcResultPartitionConsumableNotifier;
 import org.apache.flink.runtime.taskexecutor.rpc.RpcTaskOperatorEventGateway;
 import org.apache.flink.runtime.taskexecutor.slot.SlotActions;
+import org.apache.flink.runtime.taskexecutor.slot.SlotAllocationSnapshot;
+import org.apache.flink.runtime.taskexecutor.slot.SlotAllocationSnapshotPersistenceService;
 import org.apache.flink.runtime.taskexecutor.slot.SlotNotActiveException;
 import org.apache.flink.runtime.taskexecutor.slot.SlotNotFoundException;
 import org.apache.flink.runtime.taskexecutor.slot.SlotOffer;
@@ -132,6 +132,7 @@ import org.apache.flink.runtime.webmonitor.threadinfo.ThreadInfoSamplesRequest;
 import org.apache.flink.types.SerializableOptional;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkException;
+import org.apache.flink.util.FlinkExpectedException;
 import org.apache.flink.util.OptionalConsumer;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.SerializedValue;
@@ -238,6 +239,8 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
 
     private final LeaderRetrievalService resourceManagerLeaderRetriever;
 
+    private final SlotAllocationSnapshotPersistenceService slotAllocationSnapshotPersistenceService;
+
     // ------------------------------------------------------------------------
 
     private final HardwareDescription hardwareDescription;
@@ -336,6 +339,9 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
         ScheduledExecutorService sampleExecutor =
                 Executors.newSingleThreadScheduledExecutor(sampleThreadFactory);
         this.threadInfoSampleService = new ThreadInfoSampleService(sampleExecutor);
+
+        this.slotAllocationSnapshotPersistenceService =
+                taskExecutorServices.getSlotAllocationSnapshotPersistenceService();
     }
 
     private HeartbeatManager<Void, TaskExecutorHeartbeatPayload>
@@ -424,6 +430,8 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                     new FileCache(
                             taskManagerConfiguration.getTmpDirectories(),
                             taskExecutorBlobService.getPermanentBlobService());
+
+            tryLoadLocalAllocationSnapshots();
         } catch (Exception e) {
             handleStartTaskExecutorServicesException(e);
         }
@@ -446,7 +454,8 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
 
         Throwable jobManagerDisconnectThrowable = null;
 
-        FlinkException cause = new FlinkException("The TaskExecutor is shutting down.");
+        FlinkExpectedException cause =
+                new FlinkExpectedException("The TaskExecutor is shutting down.");
 
         closeResourceManagerConnection(cause);
 
@@ -952,13 +961,6 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                 checkpointTimestamp,
                 executionAttemptID);
 
-        final CheckpointType checkpointType = checkpointOptions.getCheckpointType();
-        if (checkpointType.getPostCheckpointAction() == PostCheckpointAction.TERMINATE
-                && !(checkpointType.isSynchronous() && checkpointType.isSavepoint())) {
-            throw new IllegalArgumentException(
-                    "Only synchronous savepoints are allowed to advance the watermark to MAX.");
-        }
-
         final Task task = taskSlotTable.getTask(executionAttemptID);
 
         if (task != null) {
@@ -1075,11 +1077,33 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
             return FutureUtils.completedExceptionally(new TaskManagerException(message));
         }
 
+        tryPersistAllocationSnapshot(
+                new SlotAllocationSnapshot(
+                        slotId, jobId, targetAddress, allocationId, resourceProfile));
+
         try {
-            allocateSlot(slotId, jobId, allocationId, resourceProfile);
-        } catch (SlotAllocationException sae) {
-            return FutureUtils.completedExceptionally(sae);
+            final boolean isConnected =
+                    allocateSlotForJob(jobId, slotId, allocationId, resourceProfile, targetAddress);
+
+            if (isConnected) {
+                offerSlotsToJobManager(jobId);
+            }
+
+            return CompletableFuture.completedFuture(Acknowledge.get());
+        } catch (SlotAllocationException e) {
+            log.debug("Could not allocate slot for allocation id {}.", allocationId, e);
+            return FutureUtils.completedExceptionally(e);
         }
+    }
+
+    private boolean allocateSlotForJob(
+            JobID jobId,
+            SlotID slotId,
+            AllocationID allocationId,
+            ResourceProfile resourceProfile,
+            String targetAddress)
+            throws SlotAllocationException {
+        allocateSlot(slotId, jobId, allocationId, resourceProfile);
 
         final JobTable.Job job;
 
@@ -1105,15 +1129,10 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                 onFatalError(new Exception("Could not free slot " + slotId));
             }
 
-            return FutureUtils.completedExceptionally(
-                    new SlotAllocationException("Could not create new job.", e));
+            throw new SlotAllocationException("Could not create new job.", e);
         }
 
-        if (job.isConnected()) {
-            offerSlotsToJobManager(jobId);
-        }
-
-        return CompletableFuture.completedFuture(Acknowledge.get());
+        return job.isConnected();
     }
 
     private TaskExecutorJobServices registerNewJobAndCreateServices(
@@ -1160,7 +1179,6 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
     public CompletableFuture<Acknowledge> freeSlot(
             AllocationID allocationId, Throwable cause, Time timeout) {
         freeSlotInternal(allocationId, cause);
-
         return CompletableFuture.completedFuture(Acknowledge.get());
     }
 
@@ -1398,11 +1416,11 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
             final ResourceID resourceManagerResourceId =
                     establishedResourceManagerConnection.getResourceManagerResourceId();
 
-            if (log.isDebugEnabled()) {
-                log.debug("Close ResourceManager connection {}.", resourceManagerResourceId, cause);
-            } else {
-                log.info("Close ResourceManager connection {}.", resourceManagerResourceId);
-            }
+            log.info(
+                    "Close ResourceManager connection {}.",
+                    resourceManagerResourceId,
+                    ExceptionUtils.returnExceptionIfUnexpected(cause.getCause()));
+            ExceptionUtils.logExceptionIfExcepted(cause.getCause(), log);
             resourceManagerHeartbeatManager.unmonitorTarget(resourceManagerResourceId);
 
             ResourceManagerGateway resourceManagerGateway =
@@ -1649,11 +1667,11 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
     private void disconnectJobManagerConnection(
             JobTable.Connection jobManagerConnection, Exception cause) {
         final JobID jobId = jobManagerConnection.getJobId();
-        if (log.isDebugEnabled()) {
-            log.debug("Close JobManager connection for job {}.", jobId, cause);
-        } else {
-            log.info("Close JobManager connection for job {}.", jobId);
-        }
+        log.info(
+                "Close JobManager connection for job {}.",
+                jobId,
+                ExceptionUtils.returnExceptionIfUnexpected(cause.getCause()));
+        ExceptionUtils.logExceptionIfExcepted(cause.getCause(), log);
 
         // 1. fail tasks running under this JobID
         Iterator<Task> tasks = taskSlotTable.getTasks(jobId);
@@ -1903,35 +1921,49 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
     private void freeSlotInternal(AllocationID allocationId, Throwable cause) {
         checkNotNull(allocationId);
 
-        log.debug("Free slot with allocation id {} because: {}", allocationId, cause.getMessage());
+        // only respond to freeing slots when not shutting down to avoid freeing slot allocation
+        // information
+        if (isRunning()) {
+            log.debug(
+                    "Free slot with allocation id {} because: {}",
+                    allocationId,
+                    cause.getMessage());
 
-        try {
-            final JobID jobId = taskSlotTable.getOwningJob(allocationId);
+            try {
+                final JobID jobId = taskSlotTable.getOwningJob(allocationId);
 
-            final int slotIndex = taskSlotTable.freeSlot(allocationId, cause);
+                final int slotIndex = taskSlotTable.freeSlot(allocationId, cause);
 
-            if (slotIndex != -1) {
+                slotAllocationSnapshotPersistenceService.deleteAllocationSnapshot(slotIndex);
 
-                if (isConnectedToResourceManager()) {
-                    // the slot was freed. Tell the RM about it
-                    ResourceManagerGateway resourceManagerGateway =
-                            establishedResourceManagerConnection.getResourceManagerGateway();
+                if (slotIndex != -1) {
 
-                    resourceManagerGateway.notifySlotAvailable(
-                            establishedResourceManagerConnection.getTaskExecutorRegistrationId(),
-                            new SlotID(getResourceID(), slotIndex),
-                            allocationId);
+                    if (isConnectedToResourceManager()) {
+                        // the slot was freed. Tell the RM about it
+                        ResourceManagerGateway resourceManagerGateway =
+                                establishedResourceManagerConnection.getResourceManagerGateway();
+
+                        resourceManagerGateway.notifySlotAvailable(
+                                establishedResourceManagerConnection
+                                        .getTaskExecutorRegistrationId(),
+                                new SlotID(getResourceID(), slotIndex),
+                                allocationId);
+                    }
+
+                    if (jobId != null) {
+                        closeJobManagerConnectionIfNoAllocatedResources(jobId);
+                    }
                 }
-
-                if (jobId != null) {
-                    closeJobManagerConnectionIfNoAllocatedResources(jobId);
-                }
+            } catch (SlotNotFoundException e) {
+                log.debug("Could not free slot for allocation id {}.", allocationId, e);
             }
-        } catch (SlotNotFoundException e) {
-            log.debug("Could not free slot for allocation id {}.", allocationId, e);
-        }
 
-        localStateStoresManager.releaseLocalStateForAllocationId(allocationId);
+            localStateStoresManager.releaseLocalStateForAllocationId(allocationId);
+        } else {
+            log.debug(
+                    "Ignoring the freeing of slot {} because the TaskExecutor is shutting down.",
+                    allocationId);
+        }
     }
 
     private void closeJobManagerConnectionIfNoAllocatedResources(JobID jobId) {
@@ -1940,8 +1972,8 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                 && !partitionTracker.isTrackingPartitionsFor(jobId)) {
             // we can remove the job from the job leader service
 
-            final FlinkException cause =
-                    new FlinkException(
+            final FlinkExpectedException cause =
+                    new FlinkExpectedException(
                             "TaskExecutor "
                                     + getAddress()
                                     + " has no more allocated slots for job "
@@ -2022,6 +2054,45 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                                     "%s is no longer allocated by job %s.",
                                     allocationID, allocatedSlotReport.getJobId())));
         }
+    }
+
+    private void tryPersistAllocationSnapshot(SlotAllocationSnapshot slotAllocationSnapshot) {
+        try {
+            slotAllocationSnapshotPersistenceService.persistAllocationSnapshot(
+                    slotAllocationSnapshot);
+        } catch (IOException e) {
+            log.debug("Cannot persist the slot allocation snapshot {}.", slotAllocationSnapshot, e);
+        }
+    }
+
+    /**
+     * This method tries to repopulate the {@link JobTable} and {@link TaskSlotTable} from the local
+     * filesystem in a best-effort manner.
+     */
+    private void tryLoadLocalAllocationSnapshots() {
+        Collection<SlotAllocationSnapshot> slotAllocationSnapshots =
+                slotAllocationSnapshotPersistenceService.loadAllocationSnapshots();
+
+        log.debug("Recovered slot allocation snapshots {}.", slotAllocationSnapshots);
+
+        final Set<AllocationID> allocatedSlots = new HashSet<>();
+        for (SlotAllocationSnapshot slotAllocationSnapshot : slotAllocationSnapshots) {
+            try {
+                allocateSlotForJob(
+                        slotAllocationSnapshot.getJobId(),
+                        slotAllocationSnapshot.getSlotID(),
+                        slotAllocationSnapshot.getAllocationId(),
+                        slotAllocationSnapshot.getResourceProfile(),
+                        slotAllocationSnapshot.getJobTargetAddress());
+
+            } catch (SlotAllocationException e) {
+                log.debug("Cannot reallocate restored slot {}.", slotAllocationSnapshot, e);
+            }
+
+            allocatedSlots.add(slotAllocationSnapshot.getAllocationId());
+        }
+
+        localStateStoresManager.retainLocalStateForAllocations(allocatedSlots);
     }
 
     // ------------------------------------------------------------------------

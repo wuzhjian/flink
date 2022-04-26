@@ -48,7 +48,7 @@ under the License.
 			<outputDirectory>lib</outputDirectory>
 			<unpack>false</unpack>
 			<includes>
-				<include>org.apache.flink:flink-shaded-zookeeper-3:jar:${zookeeper.version}-14.0</include>
+				<include>org.apache.flink:flink-shaded-zookeeper-3:jar:${zookeeper.version}-${flink.shaded.version}</include>
 			</includes>
 			<outputFileNameMapping>flink-shaded-zookeeper-${zookeeper.version}.jar</outputFileNameMapping>
 		</dependencySet>
@@ -261,17 +261,6 @@ under the License.
 		</fileSet>
 
 		<!-- copy jar files of the streaming examples -->
-		<fileSet>
-			<directory>../flink-examples/flink-examples-build-helper/flink-examples-streaming-twitter/target</directory>
-			<outputDirectory>examples/streaming</outputDirectory>
-			<fileMode>0644</fileMode>
-			<includes>
-				<include>*.jar</include>
-			</includes>
-			<excludes>
-				<exclude>original-*.jar</exclude>
-			</excludes>
-		</fileSet>
 		<fileSet>
 			<directory>../flink-examples/flink-examples-build-helper/flink-examples-streaming-state-machine/target</directory>
 			<outputDirectory>examples/streaming</outputDirectory>

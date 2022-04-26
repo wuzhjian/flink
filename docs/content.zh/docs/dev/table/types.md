@@ -47,7 +47,7 @@ A list of all pre-defined data types can be found [below](#list-of-data-types).
 
 ### Data Types in the Table API
 
-{{< tabs "dataytes" >}}
+{{< tabs "datatypes" >}}
 {{< tab "Java/Scala" >}}
 Users of the JVM-based API work with instances of `org.apache.flink.table.types.DataType` within the Table API or when
 defining connectors, catalogs, or user-defined functions. 
@@ -87,7 +87,7 @@ It is recommended to add a star import to your table programs for having a fluen
 ```scala
 import org.apache.flink.table.api.DataTypes._
 
-val t: DataType = INTERVAL(DAY(), SECOND(3));
+val t: DataType = INTERVAL(DAY(), SECOND(3))
 ```
 {{< /tab >}}
 {{< tab "Python" >}}
@@ -129,11 +129,11 @@ DataType t = DataTypes.ARRAY(DataTypes.INT().notNull()).bridgedTo(int[].class);
 ```scala
 // tell the runtime to not produce or consume java.time.LocalDateTime instances
 // but java.sql.Timestamp
-val t: DataType = DataTypes.TIMESTAMP(3).bridgedTo(classOf[java.sql.Timestamp]);
+val t: DataType = DataTypes.TIMESTAMP(3).bridgedTo(classOf[java.sql.Timestamp])
 
 // tell the runtime to not produce or consume boxed integer arrays
 // but primitive int arrays
-val t: DataType = DataTypes.ARRAY(DataTypes.INT().notNull()).bridgedTo(classOf[Array[Int]]);
+val t: DataType = DataTypes.ARRAY(DataTypes.INT().notNull()).bridgedTo(classOf[Array[Int]])
 ```
 {{< /tab >}}
 {{< /tabs >}}
@@ -1577,7 +1577,7 @@ class User {
 ```
 {{< /tab >}}
 {{< tab "Scala" >}}
-```java
+```scala
 import org.apache.flink.table.annotation.DataTypeHint
 
 class User {

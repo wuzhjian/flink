@@ -33,8 +33,10 @@ import org.apache.flink.runtime.dispatcher.PartialDispatcherServicesWithJobPersi
 import org.apache.flink.runtime.dispatcher.SessionDispatcherFactory;
 import org.apache.flink.runtime.dispatcher.SingleJobJobGraphStore;
 import org.apache.flink.runtime.dispatcher.StandaloneDispatcher;
-import org.apache.flink.runtime.dispatcher.TestingJobManagerRunnerFactory;
+import org.apache.flink.runtime.dispatcher.TestingJobMasterServiceLeadershipRunnerFactory;
 import org.apache.flink.runtime.dispatcher.TestingPartialDispatcherServices;
+import org.apache.flink.runtime.dispatcher.cleanup.CleanupRunnerFactory;
+import org.apache.flink.runtime.dispatcher.cleanup.TestingCleanupRunnerFactory;
 import org.apache.flink.runtime.highavailability.JobResultStore;
 import org.apache.flink.runtime.highavailability.nonha.embedded.EmbeddedJobResultStore;
 import org.apache.flink.runtime.jobgraph.JobGraph;
@@ -51,6 +53,7 @@ import org.apache.flink.runtime.util.BlobServerResource;
 import org.apache.flink.runtime.util.LeaderConnectionInfo;
 import org.apache.flink.runtime.util.TestingFatalErrorHandler;
 import org.apache.flink.testutils.TestingUtils;
+import org.apache.flink.testutils.executor.TestExecutorResource;
 import org.apache.flink.util.TestLogger;
 
 import org.apache.flink.shaded.guava30.com.google.common.collect.Iterables;
@@ -65,6 +68,7 @@ import org.slf4j.LoggerFactory;
 import java.util.Collection;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import static org.hamcrest.Matchers.contains;
@@ -84,6 +88,10 @@ public class DefaultDispatcherRunnerITCase extends TestLogger {
     public static TestingRpcServiceResource rpcServiceResource = new TestingRpcServiceResource();
 
     @ClassRule public static BlobServerResource blobServerResource = new BlobServerResource();
+
+    @ClassRule
+    public static final TestExecutorResource<ScheduledExecutorService> EXECUTOR_RESOURCE =
+            TestingUtils.defaultExecutorResource();
 
     private JobGraph jobGraph;
 
@@ -167,11 +175,13 @@ public class DefaultDispatcherRunnerITCase extends TestLogger {
     @Test
     public void leaderChange_withBlockingJobManagerTermination_doesNotAffectNewLeader()
             throws Exception {
-        final TestingJobManagerRunnerFactory jobManagerRunnerFactory =
-                new TestingJobManagerRunnerFactory(1);
+        final TestingJobMasterServiceLeadershipRunnerFactory jobManagerRunnerFactory =
+                new TestingJobMasterServiceLeadershipRunnerFactory(1);
+        final TestingCleanupRunnerFactory cleanupRunnerFactory = new TestingCleanupRunnerFactory();
         dispatcherRunnerFactory =
                 DefaultDispatcherRunnerFactory.createSessionRunner(
-                        new TestingDispatcherFactory(jobManagerRunnerFactory));
+                        new TestingDispatcherFactory(
+                                jobManagerRunnerFactory, cleanupRunnerFactory));
         jobGraphStore = new SingleJobJobGraphStore(jobGraph);
 
         try (final DispatcherRunner dispatcherRunner = createDispatcherRunner()) {
@@ -221,9 +231,13 @@ public class DefaultDispatcherRunnerITCase extends TestLogger {
 
     private static class TestingDispatcherFactory implements DispatcherFactory {
         private final JobManagerRunnerFactory jobManagerRunnerFactory;
+        private final CleanupRunnerFactory cleanupRunnerFactory;
 
-        private TestingDispatcherFactory(JobManagerRunnerFactory jobManagerRunnerFactory) {
+        private TestingDispatcherFactory(
+                JobManagerRunnerFactory jobManagerRunnerFactory,
+                CleanupRunnerFactory cleanupRunnerFactory) {
             this.jobManagerRunnerFactory = jobManagerRunnerFactory;
+            this.cleanupRunnerFactory = cleanupRunnerFactory;
         }
 
         @Override
@@ -244,7 +258,8 @@ public class DefaultDispatcherRunnerITCase extends TestLogger {
                     dispatcherBootstrapFactory,
                     DispatcherServices.from(
                             partialDispatcherServicesWithJobPersistenceComponents,
-                            jobManagerRunnerFactory));
+                            jobManagerRunnerFactory,
+                            cleanupRunnerFactory));
         }
     }
 
@@ -257,7 +272,7 @@ public class DefaultDispatcherRunnerITCase extends TestLogger {
                 dispatcherLeaderElectionService,
                 fatalErrorHandler,
                 new TestingJobPersistenceComponentFactory(jobGraphStore, jobResultStore),
-                TestingUtils.defaultExecutor(),
+                EXECUTOR_RESOURCE.getExecutor(),
                 rpcServiceResource.getTestingRpcService(),
                 partialDispatcherServices);
     }

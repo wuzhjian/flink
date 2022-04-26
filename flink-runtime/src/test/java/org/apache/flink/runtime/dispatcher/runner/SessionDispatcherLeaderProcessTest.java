@@ -46,6 +46,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -238,6 +239,71 @@ public class SessionDispatcherLeaderProcessTest {
     }
 
     @Test
+    public void testRecoveryWhileJobGraphRecoveryIsScheduledConcurrently() throws Exception {
+        final JobResult dirtyJobResult =
+                TestingJobResultStore.createSuccessfulJobResult(new JobID());
+
+        OneShotLatch recoveryInitiatedLatch = new OneShotLatch();
+        OneShotLatch jobGraphAddedLatch = new OneShotLatch();
+
+        jobGraphStore =
+                TestingJobGraphStore.newBuilder()
+                        // mimic behavior when recovering a JobGraph that is marked for deletion
+                        .setRecoverJobGraphFunction((jobId, jobs) -> null)
+                        .build();
+
+        jobResultStore =
+                TestingJobResultStore.builder()
+                        .withGetDirtyResultsSupplier(
+                                () -> {
+                                    recoveryInitiatedLatch.trigger();
+                                    try {
+                                        jobGraphAddedLatch.await();
+                                    } catch (InterruptedException e) {
+                                        Thread.currentThread().interrupt();
+                                    }
+                                    return Collections.singleton(dirtyJobResult);
+                                })
+                        .build();
+
+        final CompletableFuture<Collection<JobGraph>> recoveredJobGraphsFuture =
+                new CompletableFuture<>();
+        final CompletableFuture<Collection<JobResult>> recoveredDirtyJobResultsFuture =
+                new CompletableFuture<>();
+        dispatcherServiceFactory =
+                (ignoredDispatcherId,
+                        recoveredJobs,
+                        recoveredDirtyJobResults,
+                        ignoredJobGraphWriter,
+                        ignoredJobResultStore) -> {
+                    recoveredJobGraphsFuture.complete(recoveredJobs);
+                    recoveredDirtyJobResultsFuture.complete(recoveredDirtyJobResults);
+                    return TestingDispatcherGatewayService.newBuilder().build();
+                };
+
+        try (final SessionDispatcherLeaderProcess dispatcherLeaderProcess =
+                createDispatcherLeaderProcess()) {
+            dispatcherLeaderProcess.start();
+
+            // start returns without the initial recovery being completed
+            // mimic ZK message about an added jobgraph while the recovery is ongoing
+            recoveryInitiatedLatch.await();
+            dispatcherLeaderProcess.onAddedJobGraph(dirtyJobResult.getJobId());
+            jobGraphAddedLatch.trigger();
+
+            assertThat(recoveredJobGraphsFuture)
+                    .succeedsWithin(Duration.ofHours(1))
+                    .satisfies(recovedJobGraphs -> assertThat(recovedJobGraphs).isEmpty());
+            assertThat(recoveredDirtyJobResultsFuture)
+                    .succeedsWithin(Duration.ofHours(1))
+                    .satisfies(
+                            recoveredDirtyJobResults ->
+                                    assertThat(recoveredDirtyJobResults)
+                                            .containsExactly(dirtyJobResult));
+        }
+    }
+
+    @Test
     public void closeAsync_stopsJobGraphStoreAndDispatcher() throws Exception {
         final CompletableFuture<Void> jobGraphStopFuture = new CompletableFuture<>();
         jobGraphStore =
@@ -422,6 +488,7 @@ public class SessionDispatcherLeaderProcessTest {
         dispatcherServiceFactory =
                 createFactoryBasedOnGenericSupplier(() -> testingDispatcherService);
 
+        final ExecutorService executorService = Executors.newSingleThreadExecutor();
         try (final SessionDispatcherLeaderProcess dispatcherLeaderProcess =
                 createDispatcherLeaderProcess()) {
             dispatcherLeaderProcess.start();
@@ -430,10 +497,12 @@ public class SessionDispatcherLeaderProcessTest {
             dispatcherLeaderProcess.getDispatcherGateway().get();
 
             // now remove the Job from the JobGraphStore and notify the dispatcher service
-            jobGraphStore.removeJobGraph(JOB_GRAPH.getJobID());
+            jobGraphStore.globalCleanupAsync(JOB_GRAPH.getJobID(), executorService).join();
             dispatcherLeaderProcess.onRemovedJobGraph(JOB_GRAPH.getJobID());
 
-            assertThat(terminateJobFuture).isCompletedWithValue(JOB_GRAPH.getJobID());
+            assertThat(terminateJobFuture.get()).isEqualTo(JOB_GRAPH.getJobID());
+        } finally {
+            assertThat(executorService.shutdownNow()).isEmpty();
         }
     }
 

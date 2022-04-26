@@ -32,8 +32,8 @@ import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.TestLoggerExtension;
 import org.apache.flink.util.function.RunnableWithException;
 
-import org.apache.flink.shaded.curator4.com.google.common.collect.Iterables;
-import org.apache.flink.shaded.curator4.org.apache.curator.framework.CuratorFramework;
+import org.apache.flink.shaded.curator5.org.apache.curator.framework.CuratorFramework;
+import org.apache.flink.shaded.guava30.com.google.common.collect.Iterables;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -112,7 +112,7 @@ class ZooKeeperMultipleComponentLeaderElectionDriverTest {
                             leaderElectionDriver.publishLeaderInformation(
                                     componentId, leaderInformation);
 
-                            leaderRetrievalListener.waitForNewLeader(10_000L);
+                            leaderRetrievalListener.waitForNewLeader();
 
                             assertThat(leaderRetrievalListener.getLeader())
                                     .isEqualTo(leaderInformation);
@@ -146,12 +146,12 @@ class ZooKeeperMultipleComponentLeaderElectionDriverTest {
                                     componentId,
                                     LeaderInformation.known(UUID.randomUUID(), "foobar"));
 
-                            leaderRetrievalListener.waitForNewLeader(10_000L);
+                            leaderRetrievalListener.waitForNewLeader();
 
                             leaderElectionDriver.publishLeaderInformation(
                                     componentId, LeaderInformation.empty());
 
-                            leaderRetrievalListener.waitForEmptyLeaderInformation(10_000L);
+                            leaderRetrievalListener.waitForEmptyLeaderInformation();
 
                             assertThat(leaderRetrievalListener.getLeader())
                                     .isEqualTo(LeaderInformation.empty());

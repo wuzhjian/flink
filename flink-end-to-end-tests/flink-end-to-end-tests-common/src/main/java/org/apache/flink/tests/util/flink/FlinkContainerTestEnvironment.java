@@ -18,13 +18,14 @@
 
 package org.apache.flink.tests.util.flink;
 
-import org.apache.flink.api.common.time.Deadline;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.testframe.environment.ClusterControllable;
 import org.apache.flink.connector.testframe.environment.TestEnvironment;
 import org.apache.flink.connector.testframe.environment.TestEnvironmentSettings;
 import org.apache.flink.core.execution.JobClient;
+import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
 import org.apache.flink.runtime.testutils.CommonTestUtils;
+import org.apache.flink.streaming.api.environment.RemoteStreamEnvironment;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.tests.util.flink.container.FlinkContainers;
 import org.apache.flink.tests.util.flink.container.FlinkContainersBuilder;
@@ -33,7 +34,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.URL;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -42,7 +42,12 @@ import java.util.stream.Collectors;
 import static org.apache.flink.configuration.HeartbeatManagerOptions.HEARTBEAT_INTERVAL;
 import static org.apache.flink.configuration.HeartbeatManagerOptions.HEARTBEAT_TIMEOUT;
 import static org.apache.flink.configuration.JobManagerOptions.SLOT_REQUEST_TIMEOUT;
+import static org.apache.flink.configuration.MetricOptions.METRIC_FETCHER_UPDATE_INTERVAL;
 import static org.apache.flink.configuration.TaskManagerOptions.NUM_TASK_SLOTS;
+import static org.apache.flink.connector.testframe.utils.ConnectorTestConstants.HEARTBEAT_INTERVAL_MS;
+import static org.apache.flink.connector.testframe.utils.ConnectorTestConstants.HEARTBEAT_TIMEOUT_MS;
+import static org.apache.flink.connector.testframe.utils.ConnectorTestConstants.METRIC_FETCHER_UPDATE_INTERVAL_MS;
+import static org.apache.flink.connector.testframe.utils.ConnectorTestConstants.SLOT_REQUEST_TIMEOUT_MS;
 
 /** Test environment running job on {@link FlinkContainers}. */
 public class FlinkContainerTestEnvironment implements TestEnvironment, ClusterControllable {
@@ -65,9 +70,10 @@ public class FlinkContainerTestEnvironment implements TestEnvironment, ClusterCo
         Configuration config = new Configuration();
         config.addAll(clusterConfiguration);
         config.set(NUM_TASK_SLOTS, numSlotsPerTaskManager);
-        config.set(HEARTBEAT_INTERVAL, 1000L);
-        config.set(HEARTBEAT_TIMEOUT, 5000L);
-        config.set(SLOT_REQUEST_TIMEOUT, 10000L);
+        config.set(HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL_MS);
+        config.set(HEARTBEAT_TIMEOUT, HEARTBEAT_TIMEOUT_MS);
+        config.set(SLOT_REQUEST_TIMEOUT, SLOT_REQUEST_TIMEOUT_MS);
+        config.set(METRIC_FETCHER_UPDATE_INTERVAL, METRIC_FETCHER_UPDATE_INTERVAL_MS);
         flinkContainers =
                 FlinkContainers.builder()
                         .setNumTaskManagers(numTaskManagers)
@@ -99,6 +105,15 @@ public class FlinkContainerTestEnvironment implements TestEnvironment, ClusterCo
                 envOptions.getConnectorJarPaths().stream()
                         .map(URL::getPath)
                         .collect(Collectors.toList()));
+        if (envOptions.getSavepointRestorePath() != null) {
+            return new RemoteStreamEnvironment(
+                    flinkContainers.getJobManagerHost(),
+                    flinkContainers.getJobManagerPort(),
+                    null,
+                    jarPaths.toArray(new String[0]),
+                    null,
+                    SavepointRestoreSettings.forPath(envOptions.getSavepointRestorePath()));
+        }
         return StreamExecutionEnvironment.createRemoteEnvironment(
                 flinkContainers.getJobManagerHost(),
                 flinkContainers.getJobManagerPort(),
@@ -132,8 +147,7 @@ public class FlinkContainerTestEnvironment implements TestEnvironment, ClusterCo
                                     flinkContainers
                                             .getRestClusterClient()
                                             .getJobDetails(jobClient.getJobID())
-                                            .get(),
-                            Deadline.fromNow(Duration.ofMinutes(5)));
+                                            .get());
                     afterFailAction.run();
                 });
     }

@@ -34,7 +34,6 @@ import org.apache.beam.runners.core.construction.graph.TimerReference;
 
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 import static org.apache.flink.python.Constants.INPUT_COLLECTION_ID;
@@ -57,7 +56,6 @@ public class BeamTablePythonFunctionRunner extends BeamPythonFunctionRunner {
             ProcessPythonEnvironmentManager environmentManager,
             String functionUrn,
             GeneratedMessageV3 userDefinedFunctionProto,
-            Map<String, String> jobOptions,
             FlinkMetricContainer flinkMetricContainer,
             KeyedStateBackend<?> keyedStateBackend,
             TypeSerializer<?> keySerializer,
@@ -69,7 +67,6 @@ public class BeamTablePythonFunctionRunner extends BeamPythonFunctionRunner {
         super(
                 taskName,
                 environmentManager,
-                jobOptions,
                 flinkMetricContainer,
                 keyedStateBackend,
                 keySerializer,
@@ -78,7 +75,8 @@ public class BeamTablePythonFunctionRunner extends BeamPythonFunctionRunner {
                 memoryManager,
                 managedMemoryFraction,
                 inputCoderDescriptor,
-                outputCoderDescriptor);
+                outputCoderDescriptor,
+                Collections.emptyMap());
         this.functionUrn = Preconditions.checkNotNull(functionUrn);
         this.userDefinedFunctionProto = Preconditions.checkNotNull(userDefinedFunctionProto);
     }
@@ -122,7 +120,6 @@ public class BeamTablePythonFunctionRunner extends BeamPythonFunctionRunner {
             ProcessPythonEnvironmentManager environmentManager,
             String functionUrn,
             GeneratedMessageV3 userDefinedFunctionProto,
-            Map<String, String> jobOptions,
             FlinkMetricContainer flinkMetricContainer,
             MemoryManager memoryManager,
             double managedMemoryFraction,
@@ -133,7 +130,6 @@ public class BeamTablePythonFunctionRunner extends BeamPythonFunctionRunner {
                 environmentManager,
                 functionUrn,
                 userDefinedFunctionProto,
-                jobOptions,
                 flinkMetricContainer,
                 null,
                 null,
@@ -149,7 +145,6 @@ public class BeamTablePythonFunctionRunner extends BeamPythonFunctionRunner {
             ProcessPythonEnvironmentManager environmentManager,
             String functionUrn,
             GeneratedMessageV3 userDefinedFunctionProto,
-            Map<String, String> jobOptions,
             FlinkMetricContainer flinkMetricContainer,
             KeyedStateBackend<?> keyedStateBackend,
             TypeSerializer<?> keySerializer,
@@ -163,7 +158,6 @@ public class BeamTablePythonFunctionRunner extends BeamPythonFunctionRunner {
                 environmentManager,
                 functionUrn,
                 userDefinedFunctionProto,
-                jobOptions,
                 flinkMetricContainer,
                 keyedStateBackend,
                 keySerializer,
