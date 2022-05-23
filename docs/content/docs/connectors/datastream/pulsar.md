@@ -423,6 +423,9 @@ If you still want to use the legacy `SinkFunction` or on Flink 1.14 or previous 
 The Pulsar Sink uses a builder class to construct the `PulsarSink` instance.
 This example writes a String record to a Pulsar topic with at-least-once delivery guarantee.
 
+{{< tabs "46e225b1-1e34-4ff3-890c-aa06a2b99c0a" >}}
+{{< tab "Java" >}}
+
 ```java
 DataStream<String> stream = ...
 
@@ -433,9 +436,29 @@ PulsarSink<String> sink = PulsarSink.builder()
     .setSerializationSchema(PulsarSerializationSchema.flinkSchema(new SimpleStringSchema()))
     .setDeliverGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
     .build();
-        
+
 stream.sinkTo(sink);
 ```
+
+{{< /tab >}}
+{{< tab "Python" >}}
+
+```python
+stream = ...
+
+pulsar_sink = PulsarSink.builder() \
+    .set_service_url('pulsar://localhost:6650') \
+    .set_admin_url('http://localhost:8080') \
+    .set_topics("topic1") \
+    .set_serialization_schema(PulsarSerializationSchema.flink_schema(SimpleStringSchema())) \
+    .set_delivery_guarantee(DeliveryGuarantee.AT_LEAST_ONCE) \
+    .build()
+
+stream.sink_to(pulsar_sink)
+```
+
+{{< /tab >}}
+{{< /tabs >}}
 
 The following properties are **required** for building PulsarSink:
 
@@ -454,6 +477,9 @@ Defining the topics for producing is similar to the [topic-partition subscriptio
 in the Pulsar source. We support a mix-in style of topic setting. You can provide a list of topics,
 partitions, or both of them.
 
+{{< tabs "3d452e6b-bffd-42f7-bb91-974b306262ca" >}}
+{{< tab "Java" >}}
+
 ```java
 // Topic "some-topic1" and "some-topic2"
 PulsarSink.builder().setTopics("some-topic1", "some-topic2")
@@ -464,6 +490,23 @@ PulsarSink.builder().setTopics("topic-a-partition-0", "topic-a-partition-2")
 // Partition 0 and 2 of topic "topic-a" and topic "some-topic2"
 PulsarSink.builder().setTopics("topic-a-partition-0", "topic-a-partition-2", "some-topic2")
 ```
+
+{{< /tab >}}
+{{< tab "Python" >}}
+
+```python
+# Topic "some-topic1" and "some-topic2"
+PulsarSink.builder().set_topics(["some-topic1", "some-topic2"])
+
+# Partition 0 and 2 of topic "topic-a"
+PulsarSink.builder().set_topics(["topic-a-partition-0", "topic-a-partition-2"])
+
+# Partition 0 and 2 of topic "topic-a" and topic "some-topic2"
+PulsarSink.builder().set_topics(["topic-a-partition-0", "topic-a-partition-2", "some-topic2"])
+```
+
+{{< /tab >}}
+{{< /tabs >}}
 
 The topics you provide support auto partition discovery. We query the topic metadata from the Pulsar in a fixed interval.
 You can use the `PulsarSinkOptions.PULSAR_TOPIC_METADATA_REFRESH_INTERVAL` option to change the discovery interval option.
@@ -500,9 +543,23 @@ you can use the predefined `PulsarSerializationSchema`. The Pulsar sink provides
   PulsarSerializationSchema.pulsarSchema(Schema, Class, Class)
   ```
 - Encode the message by using Flink's `SerializationSchema`
+
+  {{< tabs "b65b9978-b1d6-4b0d-ade8-78098e0f23d8" >}}
+  {{< tab "Java" >}}
+
   ```java
   PulsarSerializationSchema.flinkSchema(SerializationSchema)
   ```
+
+  {{< /tab >}}
+  {{< tab "Python" >}}
+
+  ```python
+  PulsarSerializationSchema.flink_schema(SimpleStringSchema())
+  ```
+
+  {{< /tab >}}
+  {{< /tabs >}}
 
 [Schema evolution](https://pulsar.apache.org/docs/en/schema-evolution-compatibility/#schema-evolution)
 can be enabled by users using `PulsarSerializationSchema.pulsarSchema()` and
@@ -741,9 +798,21 @@ stats every 500ms. That means that `numRecordsOut`, `numBytesOut`, `numAcksRecei
 are updated every 60 seconds. To increase the metrics refresh frequency, you can change
 the Pulsar producer stats refresh interval to a smaller value (minimum 1 second), as shown below.
 
+{{< tabs "b65b9978-b1d6-4b0d-ade8-78098e0f23d1" >}}
+
+{{< tab "Java" >}}
 ```java
-builder.setConfig(PulsarOptions.PULSAR_STATS_INTERVAL_SECONDS. 1L)
+builder.setConfig(PulsarOptions.PULSAR_STATS_INTERVAL_SECONDS, 1L);
 ```
+{{< /tab >}}
+
+{{< tab "Python" >}}
+```python
+builder.set_config("pulsar.client.statsIntervalSeconds", "1")
+```
+{{< /tab >}}
+
+{{< /tabs >}}
 
 `numBytesOutRate` and `numRecordsOutRate` are calculated based on the `numBytesOut` and `numRecordsOUt`
 counter respectively. Flink internally uses a fixed 60 seconds window to calculate the rates.
@@ -768,23 +837,6 @@ you to reuse the same Flink job after certain "allowed" data model changes, like
 a field in a AVRO-based Pojo class. Please note that you can specify Pulsar schema validation rules
 and define an auto schema update. For details, refer to [Pulsar Schema Evolution](https://pulsar.apache.org/docs/en/schema-evolution-compatibility/).
 
-## Known Issues
-
-This section describes some known issues about the Pulsar connectors.
-
-### Unstable on Java 11
-
-Pulsar connector has some known issues on Java 11. It is recommended to run Pulsar connector
-on Java 8.
-
-### No TransactionCoordinatorNotFound, but automatic reconnect
-
-Pulsar transactions are still in active development and are not stable. Pulsar 2.9.2
-introduces [a break change](https://github.com/apache/pulsar/pull/13135) in transactions.
-If you use Pulsar 2.9.2 or higher with an older Pulsar client, you might get a `TransactionCoordinatorNotFound` exception.
-
-You can use the latest `pulsar-client-all` release to resolve this issue.
-
 ## Upgrading to the Latest Connector Version
 
 The generic upgrade steps are outlined in [upgrading jobs and Flink versions guide]({{< ref "docs/ops/upgrading" >}}).
@@ -801,5 +853,22 @@ If you have a problem with Pulsar when using Flink, keep in mind that Flink only
 [PulsarAdmin](https://pulsar.apache.org/docs/en/admin-api-overview/)
 and your problem might be independent of Flink and sometimes can be solved by upgrading Pulsar brokers,
 reconfiguring Pulsar brokers or reconfiguring Pulsar connector in Flink.
+
+## Known Issues
+
+This section describes some known issues about the Pulsar connectors.
+
+### Unstable on Java 11
+
+Pulsar connector has some known issues on Java 11. It is recommended to run Pulsar connector
+on Java 8.
+
+### No TransactionCoordinatorNotFound, but automatic reconnect
+
+Pulsar transactions are still in active development and are not stable. Pulsar 2.9.2
+introduces [a break change](https://github.com/apache/pulsar/pull/13135) in transactions.
+If you use Pulsar 2.9.2 or higher with an older Pulsar client, you might get a `TransactionCoordinatorNotFound` exception.
+
+You can use the latest `pulsar-client-all` release to resolve this issue.
 
 {{< top >}}

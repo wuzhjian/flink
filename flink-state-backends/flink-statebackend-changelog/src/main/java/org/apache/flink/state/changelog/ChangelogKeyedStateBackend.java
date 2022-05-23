@@ -22,6 +22,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.state.CheckpointListener;
+import org.apache.flink.api.common.state.InternalCheckpointListener;
 import org.apache.flink.api.common.state.State;
 import org.apache.flink.api.common.state.StateDescriptor;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
@@ -105,7 +106,8 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 public class ChangelogKeyedStateBackend<K>
         implements CheckpointableKeyedStateBackend<K>,
                 CheckpointListener,
-                TestableKeyedStateBackend<K> {
+                TestableKeyedStateBackend<K>,
+                InternalCheckpointListener {
     private static final Logger LOG = LoggerFactory.getLogger(ChangelogKeyedStateBackend.class);
 
     /**
@@ -153,6 +155,8 @@ public class ChangelogKeyedStateBackend<K>
     private final FunctionDelegationHelper functionDelegationHelper =
             new FunctionDelegationHelper();
 
+    private final ChangelogStateBackendMetricGroup metrics;
+
     /**
      * {@link SequenceNumber} denoting last upload range <b>start</b>, inclusive. Updated to {@link
      * ChangelogSnapshotState#materializedTo} when {@link #snapshot(long, long,
@@ -182,11 +186,14 @@ public class ChangelogKeyedStateBackend<K>
 
     private long lastConfirmedMaterializationId = -1L;
 
+    private final ChangelogTruncateHelper changelogTruncateHelper;
+
     public ChangelogKeyedStateBackend(
             AbstractKeyedStateBackend<K> keyedStateBackend,
             String subtaskName,
             ExecutionConfig executionConfig,
             TtlTimeProvider ttlTimeProvider,
+            ChangelogStateBackendMetricGroup metricGroup,
             StateChangelogWriter<? extends ChangelogStateHandle> stateChangelogWriter,
             Collection<ChangelogStateBackendHandle> initialState,
             CheckpointStorageWorkerView checkpointStorageWorkerView) {
@@ -195,6 +202,7 @@ public class ChangelogKeyedStateBackend<K>
                 subtaskName,
                 executionConfig,
                 ttlTimeProvider,
+                metricGroup,
                 stateChangelogWriter,
                 initialState,
                 checkpointStorageWorkerView,
@@ -207,6 +215,7 @@ public class ChangelogKeyedStateBackend<K>
             String subtaskName,
             ExecutionConfig executionConfig,
             TtlTimeProvider ttlTimeProvider,
+            ChangelogStateBackendMetricGroup metricGroup,
             StateChangelogWriter<? extends ChangelogStateHandle> stateChangelogWriter,
             Collection<ChangelogStateBackendHandle> initialState,
             CheckpointStorageWorkerView checkpointStorageWorkerView,
@@ -216,8 +225,11 @@ public class ChangelogKeyedStateBackend<K>
         this.executionConfig = executionConfig;
         this.ttlTimeProvider = ttlTimeProvider;
         this.keyValueStatesByName = new HashMap<>();
+        this.metrics = metricGroup;
         this.changelogStateFactory = changelogStateFactory;
         this.stateChangelogWriter = stateChangelogWriter;
+        this.lastUploadedTo = stateChangelogWriter.initialSequenceNumber();
+        this.closer.register(() -> stateChangelogWriter.truncateAndClose(lastUploadedTo));
         this.changelogSnapshotState = completeRestore(initialState);
         this.streamFactory =
                 new CheckpointStreamFactory() {
@@ -243,6 +255,7 @@ public class ChangelogKeyedStateBackend<K>
                     }
                 };
         this.closer.register(keyedStateBackend);
+        this.changelogTruncateHelper = new ChangelogTruncateHelper(stateChangelogWriter);
     }
 
     // -------------------- CheckpointableKeyedStateBackend --------------------------------
@@ -366,6 +379,7 @@ public class ChangelogKeyedStateBackend<K>
         lastCheckpointId = checkpointId;
         lastUploadedFrom = changelogSnapshotState.lastMaterializedTo();
         lastUploadedTo = stateChangelogWriter.nextSequenceNumber();
+        changelogTruncateHelper.checkpoint(checkpointId, lastUploadedTo);
 
         LOG.info(
                 "snapshot of {} for checkpoint {}, change range: {}..{}",
@@ -387,10 +401,17 @@ public class ChangelogKeyedStateBackend<K>
                                         buildSnapshotResult(
                                                 checkpointId,
                                                 delta,
-                                                changelogStateBackendStateCopy)));
+                                                changelogStateBackendStateCopy))
+                        .whenComplete(
+                                (snapshotResult, throwable) ->
+                                        metrics.reportSnapshotResult(snapshotResult))
+                        .thenApply(
+                                snapshotResult ->
+                                        SnapshotResult.of(
+                                                snapshotResult.getJobManagerOwnedSnapshot())));
     }
 
-    private SnapshotResult<KeyedStateHandle> buildSnapshotResult(
+    private SnapshotResult<ChangelogStateBackendHandle> buildSnapshotResult(
             long checkpointId,
             ChangelogStateHandle delta,
             ChangelogSnapshotState changelogStateBackendStateCopy) {
@@ -664,8 +685,7 @@ public class ChangelogKeyedStateBackend<K>
     public void updateChangelogSnapshotState(
             SnapshotResult<KeyedStateHandle> materializedSnapshot,
             long materializationID,
-            SequenceNumber upTo)
-            throws Exception {
+            SequenceNumber upTo) {
 
         LOG.info(
                 "Task {} finishes materialization, updates the snapshotState upTo {} : {}",
@@ -678,8 +698,7 @@ public class ChangelogKeyedStateBackend<K>
                         Collections.emptyList(),
                         upTo,
                         materializationID);
-
-        stateChangelogWriter.truncate(upTo);
+        changelogTruncateHelper.materialized(upTo);
     }
 
     // TODO: this method may change after the ownership PR
@@ -692,6 +711,11 @@ public class ChangelogKeyedStateBackend<K>
     @Override
     public KeyedStateBackend<K> getDelegatedKeyedStateBackend(boolean recursive) {
         return keyedStateBackend.getDelegatedKeyedStateBackend(recursive);
+    }
+
+    @Override
+    public void notifyCheckpointSubsumed(long checkpointId) throws Exception {
+        changelogTruncateHelper.checkpointSubsumed(checkpointId);
     }
 
     public ChangelogRestoreTarget<K> getChangelogRestoreTarget() {
