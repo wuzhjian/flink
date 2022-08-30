@@ -21,14 +21,14 @@ package org.apache.flink.streaming.api.operators.python;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.python.env.PythonEnvironmentManager;
-import org.apache.flink.python.metric.FlinkMetricContainer;
+import org.apache.flink.python.metric.process.FlinkMetricContainer;
 import org.apache.flink.runtime.state.KeyedStateBackend;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.ChainingStrategy;
+import org.apache.flink.streaming.api.operators.InternalTimeServiceManager;
 import org.apache.flink.streaming.api.operators.sorted.state.BatchExecutionInternalTimeServiceManager;
 import org.apache.flink.streaming.api.operators.sorted.state.BatchExecutionKeyedStateBackend;
 import org.apache.flink.streaming.api.watermark.Watermark;
-import org.apache.flink.table.functions.python.PythonEnv;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.WrappingRuntimeException;
 
@@ -180,14 +180,18 @@ public abstract class AbstractPythonFunctionOperator<OUT> extends AbstractStream
         // Approach 1) is the easiest and gives better latency, yet 2)
         // gives better throughput due to the bundle not getting cut on
         // every watermark. So we have implemented 2) below.
+
+        // advance the watermark and do not emit watermark to downstream operators
+        if (getTimeServiceManager().isPresent()) {
+            getTimeServiceManager().get().advanceWatermark(mark);
+        }
+
         if (mark.getTimestamp() == Long.MAX_VALUE) {
             invokeFinishBundle();
             processElementsOfCurrentKeyIfNeeded(null);
-            preEmitWatermark(mark);
+            advanceWatermark(mark);
             output.emitWatermark(mark);
         } else if (isBundleFinished()) {
-            // forward the watermark immediately if the bundle is already finished.
-            preEmitWatermark(mark);
             output.emitWatermark(mark);
         } else {
             // It is not safe to advance the output watermark yet, so add a hold on the current
@@ -195,8 +199,8 @@ public abstract class AbstractPythonFunctionOperator<OUT> extends AbstractStream
             bundleFinishedCallback =
                     () -> {
                         try {
+                            advanceWatermark(mark);
                             // at this point the bundle is finished, allow the watermark to pass
-                            preEmitWatermark(mark);
                             output.emitWatermark(mark);
                         } catch (Exception e) {
                             throw new RuntimeException(
@@ -215,7 +219,8 @@ public abstract class AbstractPythonFunctionOperator<OUT> extends AbstractStream
     private void processElementsOfCurrentKeyIfNeeded(Object newKey) {
         // process all the elements belonging to the current key when encountering a new key
         // for batch operator
-        if (inBatchExecutionMode(getKeyedStateBackend())
+        if (getKeyedStateStore() != null
+                && inBatchExecutionMode(getKeyedStateBackend())
                 && !Objects.equals(newKey, getCurrentKey())) {
             while (!isBundleFinished()) {
                 try {
@@ -256,17 +261,23 @@ public abstract class AbstractPythonFunctionOperator<OUT> extends AbstractStream
         return config;
     }
 
-    /** Returns the {@link PythonEnv} used to create PythonEnvironmentManager.. */
-    public abstract PythonEnv getPythonEnv();
-
     protected abstract void invokeFinishBundle() throws Exception;
 
     protected abstract PythonEnvironmentManager createPythonEnvironmentManager();
 
-    /** Called before emitting watermark to downstream. */
-    protected void preEmitWatermark(Watermark mark) throws Exception {
+    /**
+     * Advances the watermark of all managed timer services, potentially firing event time timers.
+     * It also ensures that the fired timers are processed in the Python user-defined functions.
+     */
+    private void advanceWatermark(Watermark watermark) throws Exception {
         if (getTimeServiceManager().isPresent()) {
-            getTimeServiceManager().get().advanceWatermark(mark);
+            InternalTimeServiceManager<?> timeServiceManager = getTimeServiceManager().get();
+            timeServiceManager.advanceWatermark(watermark);
+
+            while (!isBundleFinished()) {
+                invokeFinishBundle();
+                timeServiceManager.advanceWatermark(watermark);
+            }
         }
     }
 

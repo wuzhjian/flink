@@ -34,6 +34,8 @@ Details on Pulsar compatibility can be found in [PIP-72](https://github.com/apac
 
 {{< artifact flink-connector-pulsar >}}
 
+{{< py_download_link "pulsar" >}}
+
 Flink's streaming connectors are not part of the binary distribution.
 See how to link with them for cluster execution [here]({{< ref "docs/dev/configuration/overview" >}}).
 
@@ -50,6 +52,9 @@ The Pulsar source provides a builder class for constructing a PulsarSource insta
 "persistent://public/default/my-topic" in **Exclusive** subscription type (`my-subscription`)
 and deserializes the raw payload of the messages as strings.
 
+{{< tabs "pulsar-source-usage" >}}
+{{< tab "Java" >}}
+
 ```java
 PulsarSource<String> source = PulsarSource.builder()
     .setServiceUrl(serviceUrl)
@@ -63,6 +68,29 @@ PulsarSource<String> source = PulsarSource.builder()
 
 env.fromSource(source, WatermarkStrategy.noWatermarks(), "Pulsar Source");
 ```
+
+{{< /tab >}}
+{{< tab "Python" >}}
+
+```python
+pulsar_source = PulsarSource.builder() \
+    .set_service_url('pulsar://localhost:6650') \
+    .set_admin_url('http://localhost:8080') \
+    .set_start_cursor(StartCursor.earliest()) \
+    .set_topics("my-topic") \
+    .set_deserialization_schema(
+        PulsarDeserializationSchema.flink_schema(SimpleStringSchema())) \
+    .set_subscription_name('my-subscription') \
+    .set_subscription_type(SubscriptionType.Exclusive) \
+    .build()
+
+env.from_source(source=pulsar_source,
+                watermark_strategy=WatermarkStrategy.for_monotonous_timestamps(),
+                source_name="pulsar source")
+```
+
+{{< /tab >}}
+{{< /tabs >}}
 
 The following properties are **required** for building a PulsarSource:
 
@@ -83,6 +111,9 @@ You can use it to monitor the performance of your Flink connector and applicatio
 Pulsar source provide two ways of topic-partition subscription:
 
 - Topic list, subscribing messages from all partitions in a list of topics. For example:
+  {{< tabs "pulsar-source-topics" >}}
+  {{< tab "Java" >}}
+
   ```java
   PulsarSource.builder().setTopics("some-topic1", "some-topic2");
 
@@ -90,10 +121,36 @@ Pulsar source provide two ways of topic-partition subscription:
   PulsarSource.builder().setTopics("topic-a-partition-0", "topic-a-partition-2");
   ```
 
+  {{< /tab >}}
+  {{< tab "Python" >}}
+
+  ```python
+  PulsarSource.builder().set_topics(["some-topic1", "some-topic2"])
+
+  # Partition 0 and 2 of topic "topic-a"
+  PulsarSource.builder().set_topics(["topic-a-partition-0", "topic-a-partition-2"])
+  ```
+
+  {{< /tab >}}
+  {{< /tabs >}}
+
 - Topic pattern, subscribing messages from all topics whose name matches the provided regular expression. For example:
+  {{< tabs "pulsar-source-topic-pattern" >}}
+  {{< tab "Java" >}}
+
   ```java
   PulsarSource.builder().setTopicPattern("topic-*");
   ```
+
+  {{< /tab >}}
+  {{< tab "Python" >}}
+
+  ```python
+  PulsarSource.builder().set_topic_pattern("topic-*")
+  ```
+
+  {{< /tab >}}
+  {{< /tabs >}}
 
 #### Flexible Topic Naming
 
@@ -169,13 +226,32 @@ you can use the predefined `PulsarDeserializationSchema`. Pulsar connector provi
   PulsarDeserializationSchema.pulsarSchema(Schema, Class, Class);
   ```
 - Decode the message by using Flink's `DeserializationSchema`
+  {{< tabs "pulsar-deserializer-deserialization-schema" >}}
+  {{< tab "Java" >}}
   ```java
   PulsarDeserializationSchema.flinkSchema(DeserializationSchema);
   ```
+  {{< /tab >}}
+  {{< tab "Python" >}}
+  ```python
+  PulsarDeserializationSchema.flink_schema(DeserializationSchema)
+  ```
+  {{< /tab >}}
+  {{< /tabs >}}
+
 - Decode the message by using Flink's `TypeInformation`
+  {{< tabs "pulsar-deserializer-type-information" >}}
+  {{< tab "Java" >}}
   ```java
   PulsarDeserializationSchema.flinkTypeInfo(TypeInformation, ExecutionConfig);
   ```
+  {{< /tab >}}
+  {{< tab "Python" >}}
+  ```python
+  PulsarDeserializationSchema.flink_type_info(TypeInformation)
+  ```
+  {{< /tab >}}
+  {{< /tabs >}}
 
 Pulsar `Message<byte[]>` contains some [extra properties](https://pulsar.apache.org/docs/en/concepts-messaging/#messages),
 such as message key, message publish time, message time, and application-defined key/value pairs etc.
@@ -200,6 +276,9 @@ When a Flink reader crashes, all (non-acknowledged and subsequent) messages are 
 
 By default, if no subscription type is defined, Pulsar source uses the `Shared` subscription type.
 
+{{< tabs "pulsar-subscriptions" >}}
+{{< tab "Java" >}}
+
 ```java
 // Shared subscription with name "my-shared"
 PulsarSource.builder().setSubscriptionName("my-shared");
@@ -207,6 +286,20 @@ PulsarSource.builder().setSubscriptionName("my-shared");
 // Exclusive subscription with name "my-exclusive"
 PulsarSource.builder().setSubscriptionName("my-exclusive").setSubscriptionType(SubscriptionType.Exclusive);
 ```
+
+{{< /tab >}}
+{{< tab "Python" >}}
+
+```python
+# Shared subscription with name "my-shared"
+PulsarSource.builder().set_subscription_name("my-shared")
+
+# Exclusive subscription with name "my-exclusive"
+PulsarSource.builder().set_subscription_name("my-exclusive").set_subscription_type(SubscriptionType.Exclusive)
+```
+
+{{< /tab >}}
+{{< /tabs >}}
 
 Ensure that you provide a `RangeGenerator` implementation if you want to use the `Key_Shared` subscription type on the Pulsar connector.
 The `RangeGenerator` generates a set of key hash ranges so that a respective reader subtask only dispatches messages where the hash of the message key is contained in the specified range.
@@ -220,31 +313,97 @@ The Pulsar source is able to consume messages starting from different positions 
 Built-in start cursors include:
 
 - Start from the earliest available message in the topic.
+  {{< tabs "pulsar-starting-position-earliest" >}}
+  {{< tab "Java" >}}
   ```java
   StartCursor.earliest();
   ```
+  {{< /tab >}}
+  {{< tab "Python" >}}
+  ```python
+  StartCursor.earliest()
+  ```
+  {{< /tab >}}
+  {{< /tabs >}}
+
 - Start from the latest available message in the topic.
+  {{< tabs "pulsar-starting-position-latest" >}}
+  {{< tab "Java" >}}
   ```java
   StartCursor.latest();
   ```
+  {{< /tab >}}
+  {{< tab "Python" >}}
+  ```python
+  StartCursor.latest()
+  ```
+  {{< /tab >}}
+  {{< /tabs >}}
+
 - Start from a specified message between the earliest and the latest.
 The Pulsar connector consumes from the latest available message if the message ID does not exist.
 
   The start message is included in consuming result.
+  {{< tabs "pulsar-starting-position-from-message-id" >}}
+  {{< tab "Java" >}}
   ```java
   StartCursor.fromMessageId(MessageId);
   ```
+  {{< /tab >}}
+  {{< tab "Python" >}}
+  ```python
+  StartCursor.from_message_id(message_id)
+  ```
+  {{< /tab >}}
+  {{< /tabs >}}
+
 - Start from a specified message between the earliest and the latest.
 The Pulsar connector consumes from the latest available message if the message ID doesn't exist.
 
   Include or exclude the start message by using the second boolean parameter.
+  {{< tabs "pulsar-starting-position-from-message-id-bool" >}}
+  {{< tab "Java" >}}
   ```java
   StartCursor.fromMessageId(MessageId, boolean);
   ```
-- Start from the specified message time by `Message<byte[]>.getPublishTime()`.
+  {{< /tab >}}
+  {{< tab "Python" >}}
+  ```python
+  StartCursor.from_message_id(message_id, boolean)
+  ```
+  {{< /tab >}}
+  {{< /tabs >}}
+
+- Start from the specified message publish time by `Message<byte[]>.getPublishTime()`.
+This method is deprecated because the name is totally wrong which may cause confuse.
+You can use `StartCursor.fromPublishTime(long)` instead.
+
+  {{< tabs "pulsar-starting-position-message-time" >}}
+  {{< tab "Java" >}}
   ```java
   StartCursor.fromMessageTime(long);
   ```
+  {{< /tab >}}
+  {{< tab "Python" >}}
+  ```python
+  StartCursor.from_message_time(int)
+  ```
+  {{< /tab >}}
+  {{< /tabs >}}
+
+- Start from the specified message publish time by `Message<byte[]>.getPublishTime()`.
+  {{< tabs "pulsar-starting-position-publish-time" >}}
+  {{< tab "Java" >}}
+  ```java
+  StartCursor.fromPublishTime(long);
+  ```
+  {{< /tab >}}
+  {{< tab "Python" >}}
+  ```python
+  StartCursor.from_publish_time(int)
+  ```
+  {{< /tab >}}
+  {{< /tabs >}}
 
 {{< hint info >}}
 Each Pulsar message belongs to an ordered sequence on its topic.
@@ -266,29 +425,120 @@ You can use `setBoundedStopCursor(StopCursor)` to specify a stop position for bo
 Built-in stop cursors include:
 
 - The Pulsar source never stops consuming messages.
+  {{< tabs "pulsar-boundedness-never" >}}
+  {{< tab "Java" >}}
   ```java
   StopCursor.never();
   ```
-- Stop at the latest available message when the  Pulsar source starts consuming messages.
+  {{< /tab >}}
+  {{< tab "Python" >}}
+  ```python
+  StopCursor.never()
+  ```
+  {{< /tab >}}
+  {{< /tabs >}}
+
+- Stop at the latest available message when the Pulsar source starts consuming messages.
+  {{< tabs "pulsar-boundedness-latest" >}}
+  {{< tab "Java" >}}
   ```java
   StopCursor.latest();
   ```
+  {{< /tab >}}
+  {{< tab "Python" >}}
+  ```python
+  StopCursor.latest()
+  ```
+  {{< /tab >}}
+  {{< /tabs >}}
+
 - Stop when the connector meets a given message, or stop at a message which is produced after this given message.
+  {{< tabs "pulsar-boundedness-at-message-id" >}}
+  {{< tab "Java" >}}
   ```java
   StopCursor.atMessageId(MessageId);
   ```
+  {{< /tab >}}
+  {{< tab "Python" >}}
+  ```python
+  StopCursor.at_message_id(message_id)
+  ```
+  {{< /tab >}}
+  {{< /tabs >}}
+
 - Stop but include the given message in the consuming result.
+  {{< tabs "pulsar-boundedness-after-message-id" >}}
+  {{< tab "Java" >}}
   ```java
   StopCursor.afterMessageId(MessageId);
   ```
-- Stop at the specified message time by `Message<byte[]>.getPublishTime()`.
+  {{< /tab >}}
+  {{< tab "Python" >}}
+  ```python
+  StopCursor.after_message_id(message_id)
+  ```
+  {{< /tab >}}
+  {{< /tabs >}}
+
+- Stop at the specified event time by `Message<byte[]>.getEventTime()`. The message with the
+given event time won't be included in the consuming result.
+  {{< tabs "pulsar-boundedness-at-event-time" >}} 
+  {{< tab "Java" >}}
+  ```java
+  StopCursor.atEventTime(long);
+  ```
+  {{< /tab >}}
+  {{< tab "Python" >}}
+  ```python
+  StopCursor.at_event_time(int)
+  ```
+  {{< /tab >}}
+  {{< /tabs >}}
+
+- Stop after the specified event time by `Message<byte[]>.getEventTime()`. The message with the
+given event time will be included in the consuming result.
+  {{< tabs "pulsar-boundedness-after-event-time" >}}
+  {{< tab "Java" >}}
+  ```java
+  StopCursor.afterEventTime(long);
+  ```
+  {{< /tab >}}
+  {{< tab "Python" >}}
+  ```python
+  StopCursor.after_event_time(int)
+  ```
+  {{< /tab >}}
+  {{< /tabs >}}
+
+- Stop at the specified publish time by `Message<byte[]>.getPublishTime()`. The message with the
+given publish time won't be included in the consuming result.
+  {{< tabs "pulsar-boundedness-at-publish-time" >}}
+  {{< tab "Java" >}}
   ```java
   StopCursor.atPublishTime(long);
   ```
+  {{< /tab >}}
+  {{< tab "Python" >}}
+  ```python
+  StopCursor.at_publish_time(int)
+  ```
+  {{< /tab >}}
+  {{< /tabs >}}
 
-{{< hint warning >}}
-StopCursor.atEventTime(long) is now deprecated.
-  {{< /hint >}}
+- Stop after the specified publish time by `Message<byte[]>.getPublishTime()`. The message with the
+given publish time will be included in the consuming result.
+  {{< tabs "pulsar-boundedness-after-publish-time" >}}
+  {{< tab "Java" >}}
+  ```java
+  StopCursor.afterPublishTime(long);
+  ```
+  {{< /tab >}}
+  {{< tab "Python" >}}
+  ```python
+  StopCursor.after_publish_time(int)
+  ```
+  {{< /tab >}}
+  {{< /tabs >}}
 
 ### Source Configurable Options
 
@@ -335,11 +585,26 @@ job, the Pulsar source periodically discover new partitions under a provided
 topic-partition subscription pattern. To enable partition discovery, you can set a non-negative value for
 the `PulsarSourceOptions.PULSAR_PARTITION_DISCOVERY_INTERVAL_MS` option:
 
+{{< tabs "pulsar-dynamic-partition-discovery" >}}
+{{< tab "Java" >}}
+
 ```java
 // discover new partitions per 10 seconds
 PulsarSource.builder()
     .setConfig(PulsarSourceOptions.PULSAR_PARTITION_DISCOVERY_INTERVAL_MS, 10000);
 ```
+
+{{< /tab >}}
+{{< tab "Python" >}}
+
+```python
+# discover new partitions per 10 seconds
+PulsarSource.builder()
+    .set_config("pulsar.source.partitionDiscoveryIntervalMs", 10000)
+```
+
+{{< /tab >}}
+{{< /tabs >}}
 
 {{< hint warning >}}
 - Partition discovery is **enabled** by default. The Pulsar connector queries the topic metadata every 30 seconds.
@@ -353,9 +618,22 @@ By default, the message uses the timestamp embedded in Pulsar `Message<byte[]>` 
 You can define your own `WatermarkStrategy` to extract the event time from the message,
 and emit the watermark downstream:
 
+{{< tabs "pulsar-watermarks" >}}
+{{< tab "Java" >}}
+
 ```java
 env.fromSource(pulsarSource, new CustomWatermarkStrategy(), "Pulsar Source With Custom Watermark Strategy");
 ```
+
+{{< /tab >}}
+{{< tab "Python" >}}
+
+```python
+env.from_source(pulsar_source, CustomWatermarkStrategy(), "Pulsar Source With Custom Watermark Strategy")
+```
+
+{{< /tab >}}
+{{< /tabs >}}
 
 [This documentation]({{< ref "docs/dev/datastream/event-time/generating_watermarks.md" >}}) describes
 details about how to define a `WatermarkStrategy`.

@@ -546,23 +546,29 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
 
     @Override
     public CompletableFuture<TaskThreadInfoResponse> requestThreadInfoSamples(
-            final ExecutionAttemptID taskExecutionAttemptId,
+            final Collection<ExecutionAttemptID> taskExecutionAttemptIds,
             final ThreadInfoSamplesRequest requestParams,
             final Time timeout) {
 
-        final Task task = taskSlotTable.getTask(taskExecutionAttemptId);
-        if (task == null) {
-            return FutureUtils.completedExceptionally(
-                    new IllegalStateException(
-                            String.format(
-                                    "Cannot sample task %s. "
-                                            + "Task is not known to the task manager.",
-                                    taskExecutionAttemptId)));
+        final Collection<Task> tasks = new ArrayList<>();
+        for (ExecutionAttemptID executionAttemptId : taskExecutionAttemptIds) {
+            final Task task = taskSlotTable.getTask(executionAttemptId);
+            if (task == null) {
+                log.warn(
+                        String.format(
+                                "Cannot sample task %s. "
+                                        + "Task is not known to the task manager.",
+                                executionAttemptId));
+            } else {
+                tasks.add(task);
+            }
         }
 
-        final CompletableFuture<List<ThreadInfoSample>> stackTracesFuture =
-                threadInfoSampleService.requestThreadInfoSamples(
-                        SampleableTaskAdapter.fromTask(task), requestParams);
+        Collection<SampleableTask> sampleableTasks =
+                tasks.stream().map(SampleableTaskAdapter::fromTask).collect(Collectors.toList());
+
+        final CompletableFuture<Collection<ThreadInfoSample>> stackTracesFuture =
+                threadInfoSampleService.requestThreadInfoSamples(sampleableTasks, requestParams);
 
         return stackTracesFuture.thenApply(TaskThreadInfoResponse::new);
     }
@@ -685,14 +691,19 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                             jobId,
                             tdd.getAllocationId(),
                             taskInformation.getJobVertexId(),
-                            tdd.getSubtaskIndex());
+                            tdd.getSubtaskIndex(),
+                            taskManagerConfiguration.getConfiguration(),
+                            jobInformation.getJobConfiguration());
 
             // TODO: Pass config value from user program and do overriding here.
             final StateChangelogStorage<?> changelogStorage;
             try {
                 changelogStorage =
                         changelogStoragesManager.stateChangelogStorageForJob(
-                                jobId, taskManagerConfiguration.getConfiguration(), jobGroup);
+                                jobId,
+                                taskManagerConfiguration.getConfiguration(),
+                                jobGroup,
+                                localStateStore.getLocalRecoveryConfig());
             } catch (IOException e) {
                 throw new TaskSubmissionException(e);
             }
@@ -705,6 +716,7 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                             tdd.getExecutionAttemptId(),
                             localStateStore,
                             changelogStorage,
+                            changelogStoragesManager,
                             taskRestore,
                             checkpointResponder);
 
@@ -816,8 +828,8 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
     private Stream<ResultPartitionDeploymentDescriptor> filterPartitionsRequiringRelease(
             Collection<ResultPartitionDeploymentDescriptor> producedResultPartitions) {
         return producedResultPartitions.stream()
-                // only blocking partitions require explicit release call
-                .filter(d -> d.getPartitionType().isBlocking())
+                // only releaseByScheduler partitions require explicit release call
+                .filter(d -> d.getPartitionType().isReleaseByScheduler())
                 // partitions without local resources don't store anything on the TaskExecutor
                 .filter(d -> d.getShuffleDescriptor().storesLocalResourcesOn().isPresent());
     }
@@ -901,7 +913,12 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
         try {
             partitionTracker.stopTrackingAndReleaseJobPartitions(partitionToRelease);
             partitionTracker.promoteJobPartitions(partitionsToPromote);
-
+            if (establishedResourceManagerConnection != null) {
+                establishedResourceManagerConnection
+                        .getResourceManagerGateway()
+                        .reportClusterPartitions(
+                                getResourceID(), partitionTracker.createClusterPartitionReport());
+            }
             closeJobManagerConnectionIfNoAllocatedResources(jobId);
         } catch (Throwable t) {
             // TODO: Do we still need this catch branch?
@@ -1339,7 +1356,8 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                         hardwareDescription,
                         memoryConfiguration,
                         taskManagerConfiguration.getDefaultSlotResourceProfile(),
-                        taskManagerConfiguration.getTotalResourceProfile());
+                        taskManagerConfiguration.getTotalResourceProfile(),
+                        unresolvedTaskManagerLocation.getNodeId());
 
         resourceManagerConnection =
                 new TaskExecutorToResourceManagerConnection(
@@ -1794,7 +1812,7 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
                             closeJob(job, cause);
                         });
         taskManagerMetricGroup.removeJobMetricsGroup(jobId);
-        changelogStoragesManager.releaseStateChangelogStorageForJob(jobId);
+        changelogStoragesManager.releaseResourcesForJob(jobId);
         currentSlotOfferPerJob.remove(jobId);
     }
 

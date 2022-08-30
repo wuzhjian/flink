@@ -55,6 +55,7 @@ under the License.
 		<module>flink-confluent-schema-registry</module>
 		<module>flink-stream-state-ttl-test</module>
 		<module>flink-sql-client-test</module>
+		<module>flink-sql-gateway-test</module>
 		<module>flink-file-sink-test</module>
 		<module>flink-state-evolution-test</module>
 		<module>flink-rocksdb-state-memory-control-test</module>
@@ -82,7 +83,8 @@ under the License.
 		<module>flink-end-to-end-tests-elasticsearch6</module>
 		<module>flink-end-to-end-tests-elasticsearch7</module>
 		<module>flink-end-to-end-tests-common-elasticsearch</module>
-	</modules>
+		<module>flink-end-to-end-tests-sql</module>
+    </modules>
 
 	<dependencyManagement>
 		<dependencies>
