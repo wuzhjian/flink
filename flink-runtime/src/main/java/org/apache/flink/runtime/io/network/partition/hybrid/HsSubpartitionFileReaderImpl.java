@@ -55,9 +55,11 @@ public class HsSubpartitionFileReaderImpl implements HsSubpartitionFileReader {
 
     private final int subpartitionId;
 
+    private final HsConsumerId consumerId;
+
     private final FileChannel dataFileChannel;
 
-    private final HsSubpartitionViewInternalOperations operations;
+    private final HsSubpartitionConsumerInternalOperations operations;
 
     private final CachedRegionManager cachedRegionManager;
 
@@ -71,13 +73,15 @@ public class HsSubpartitionFileReaderImpl implements HsSubpartitionFileReader {
 
     public HsSubpartitionFileReaderImpl(
             int subpartitionId,
+            HsConsumerId consumerId,
             FileChannel dataFileChannel,
-            HsSubpartitionViewInternalOperations operations,
+            HsSubpartitionConsumerInternalOperations operations,
             HsFileDataIndex dataIndex,
             int maxBufferReadAhead,
             Consumer<HsSubpartitionFileReader> fileReaderReleaser,
             ByteBuffer headerBuf) {
         this.subpartitionId = subpartitionId;
+        this.consumerId = consumerId;
         this.dataFileChannel = dataFileChannel;
         this.operations = operations;
         this.headerBuf = headerBuf;
@@ -95,12 +99,12 @@ public class HsSubpartitionFileReaderImpl implements HsSubpartitionFileReader {
             return false;
         }
         HsSubpartitionFileReaderImpl that = (HsSubpartitionFileReaderImpl) o;
-        return subpartitionId == that.subpartitionId;
+        return subpartitionId == that.subpartitionId && Objects.equals(consumerId, that.consumerId);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(subpartitionId);
+        return Objects.hash(subpartitionId, consumerId);
     }
 
     /**
@@ -188,7 +192,9 @@ public class HsSubpartitionFileReaderImpl implements HsSubpartitionFileReader {
     public void prepareForScheduling() {
         // Access the consuming offset with lock, to prevent loading any buffer released from the
         // memory data manager that is already consumed.
-        bufferIndexManager.updateLastConsumed(operations.getConsumingOffset(true));
+        int consumingOffset = operations.getConsumingOffset(true);
+        bufferIndexManager.updateLastConsumed(consumingOffset);
+        cachedRegionManager.updateConsumingOffset(consumingOffset);
     }
 
     /** Provides priority calculation logic for io scheduler. */
@@ -379,6 +385,8 @@ public class HsSubpartitionFileReaderImpl implements HsSubpartitionFileReader {
         private final int subpartitionId;
         private final HsFileDataIndex dataIndex;
 
+        private int consumingOffset = -1;
+
         private int currentBufferIndex;
         private int numSkip;
         private int numReadable;
@@ -392,6 +400,10 @@ public class HsSubpartitionFileReaderImpl implements HsSubpartitionFileReader {
         // ------------------------------------------------------------------------
         //  Called by HsSubpartitionFileReader
         // ------------------------------------------------------------------------
+
+        public void updateConsumingOffset(int consumingOffset) {
+            this.consumingOffset = consumingOffset;
+        }
 
         /** Return Long.MAX_VALUE if region does not exist to giving the lowest priority. */
         private long getFileOffset(int bufferIndex) {
@@ -448,7 +460,7 @@ public class HsSubpartitionFileReaderImpl implements HsSubpartitionFileReader {
             }
 
             Optional<HsFileDataIndex.ReadableRegion> lookupResultOpt =
-                    dataIndex.getReadableRegion(subpartitionId, bufferIndex);
+                    dataIndex.getReadableRegion(subpartitionId, bufferIndex, consumingOffset);
             if (!lookupResultOpt.isPresent()) {
                 currentBufferIndex = -1;
                 numReadable = 0;
@@ -478,14 +490,16 @@ public class HsSubpartitionFileReaderImpl implements HsSubpartitionFileReader {
         @Override
         public HsSubpartitionFileReader createFileReader(
                 int subpartitionId,
+                HsConsumerId consumerId,
                 FileChannel dataFileChannel,
-                HsSubpartitionViewInternalOperations operation,
+                HsSubpartitionConsumerInternalOperations operation,
                 HsFileDataIndex dataIndex,
                 int maxBuffersReadAhead,
                 Consumer<HsSubpartitionFileReader> fileReaderReleaser,
                 ByteBuffer headerBuffer) {
             return new HsSubpartitionFileReaderImpl(
                     subpartitionId,
+                    consumerId,
                     dataFileChannel,
                     operation,
                     dataIndex,
